@@ -9,6 +9,11 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = PROJECT_ROOT / "data"
 
+# === Data Subdirectories ===
+RAW_DATA_PATH = DATA_PATH / "raw"
+PROCESSED_DATA_PATH = DATA_PATH / "processed"
+MODEL_PATH = DATA_PATH / "models"
+
 BASE_URL = os.getenv("DELTA_API_BASE_URL")
 REAL_TIME_BASE_URL = os.getenv("DELTA_REALTIME_URL")
 QUOTE_CURRENCY = os.getenv("DELTA_QUOTE_CURRENCY", "USDT")
