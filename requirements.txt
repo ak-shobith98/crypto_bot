@@ -1,3 +1,11 @@
 # File: requirements.txt
 # Purpose: List of Python dependencies
 
+numpy
+xgboost
+scikit-learn
+requests
+joblib
+psycopg2-binary
+python-dotenv
+ccxt
