@@ -38,21 +38,21 @@ def main():
     """
     print("🚀 Starting main pipeline...\n")
 
-    # ===== STAGE 1: Data Collection =====
-    # candles = run_data_collection(resolution="1h", days=15)
-    # if candles.empty:
-    #     print("❌ No data fetched, aborting pipeline.")
-    #     return
+    # # ===== STAGE 1: Data Collection =====
+    candles = run_data_collection(resolution="1h", days=15)
+    if candles.empty:
+        print("❌ No data fetched, aborting pipeline.")
+        return
 
-    # print("\n📊 Data Collection Summary:")
-    # print(f"Symbols collected: {candles['symbol'].nunique()}")
-    # print(f"Total candles: {len(candles)}")
-    # # Handle different possible time column names
-    # time_col = "timestamp" if "timestamp" in candles.columns else "time" if "time" in candles.columns else None
-    # if time_col:
-    #     print(f"Data range: {candles[time_col].min()} → {candles[time_col].max()}")
-    # else:
-    #     print("⚠️ No timestamp column found in candle data.")
+    print("\n📊 Data Collection Summary:")
+    print(f"Symbols collected: {candles['symbol'].nunique()}")
+    print(f"Total candles: {len(candles)}")
+    # Handle different possible time column names
+    time_col = "timestamp" if "timestamp" in candles.columns else "time" if "time" in candles.columns else None
+    if time_col:
+        print(f"Data range: {candles[time_col].min()} → {candles[time_col].max()}")
+    else:
+        print("⚠️ No timestamp column found in candle data.")
 
 
     # ===== STAGE 2: Preprocessing =====
@@ -64,15 +64,20 @@ def main():
         print("⚠️ Feature generation failed or returned empty DataFrame.")
 
     # ===== (Future) STAGE 3: Modeling =====
-    # from src.models.trainer import train_model
-    # train_model(features)
+    from src.models.trainer import train_model
+    train_model()
 
     # ===== (Future) STAGE 4: Decision Layer =====
-    # from src.decision.signals import generate_signals
-    # generate_signals(features)
+    from src.decision.signals import generate_signals
 
-    print("\n🏁 Pipeline completed successfully.")
+    print("\n📈 Stage 4: Generating numeric trade signals...")
+    features_path = DATA_PATH / "processed" / "features.parquet"
+    features = pd.read_parquet(features_path)
 
+    signals_df = generate_signals(features)
+    signals_path = DATA_PATH / "processed" / "signals.csv"
+    signals_df.to_csv(signals_path, index=False)
+    print(f"💾 Saved signals to: {signals_path}")
 
 if __name__ == "__main__":
     main()
