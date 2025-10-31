@@ -1,16 +1,16 @@
 # File: src/models/predictor.py
-# Purpose: Load trained model, fetch live candles from Delta Exchange, generate predictions,
-# and log signals for live / paper trading workflows.
+# Purpose: Load trained model, fetch live candles, predict BUY/SELL/HOLD with confidence,
+# and log signals for live/paper trading workflows.
 
 import os
 import time
-import json
 import joblib
 import pandas as pd
 import xgboost as xgb
 import requests
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
 from src.collectors.realtime_data import fetch_realtime
 from src.preprocess.features import add_technical_features
 from src.config import REAL_TIME_BASE_URL, DATA_PATH
@@ -24,7 +24,7 @@ DELTA_CANDLE_URL = f"{REAL_TIME_BASE_URL}/history/candles"
 
 
 # --------------------------------------------------
-# 🧱 Utility: Fetch latest N candles
+# 🧱 Utility: Fetch recent N candles
 # --------------------------------------------------
 def fetch_recent_candles(symbol: str, limit: int = 100):
     """Fetch recent 1m candles from Delta Exchange."""
@@ -95,17 +95,20 @@ def load_trained_model():
 
 
 # --------------------------------------------------
-# 🔮 Predict Signal
+# 🔮 Predict Signal (Multi-class)
 # --------------------------------------------------
 def predict_signal(model, features: pd.DataFrame, prob_threshold: float = 0.55):
-    """Predict trade signal (BUY / SELL / HOLD) with probability."""
+    """
+    Predict trade signal (BUY / HOLD / SELL) using multi-class probabilities.
+    Expects model.predict_proba() output in order: [BUY, HOLD, SELL].
+    """
     if features.empty:
         return None
 
     # Keep only numeric columns
     X = features.select_dtypes(include=["number"]).fillna(0)
 
-    # ✅ Ensure consistent feature order with training
+    # Ensure consistent feature order
     expected_order = [
         "open", "high", "low", "close", "volume", "return",
         "sma_7", "ema_14", "volatility_14", "rsi_14",
@@ -114,22 +117,31 @@ def predict_signal(model, features: pd.DataFrame, prob_threshold: float = 0.55):
     ]
     X = X.reindex(columns=expected_order, fill_value=0)
 
-    # Predict
-    preds = model.predict(X)
-    probs = model.predict_proba(X)[:, 1] if hasattr(model, "predict_proba") else [0.5] * len(preds)
+    try:
+        probs = model.predict_proba(X)[-1]  # [p_buy, p_hold, p_sell]
+    except Exception as e:
+        print(f"[WARN] Predict_proba failed: {e}")
+        return None
 
-    last_pred, last_prob = preds[-1], probs[-1]
-    if last_prob > prob_threshold:
-        signal, label = 1, "BUY"
-    elif last_prob < (1 - prob_threshold):
-        signal, label = -1, "SELL"
+    p_buy, p_hold, p_sell = probs
+    max_prob = max(p_buy, p_sell)
+
+    # Decision logic
+    if max_prob >= prob_threshold:
+        if p_buy > p_sell:
+            signal, label = 1, "BUY"
+        else:
+            signal, label = -1, "SELL"
     else:
         signal, label = 0, "HOLD"
 
     return {
         "timestamp": features.iloc[-1]["timestamp"],
         "symbol": features.iloc[-1]["symbol"],
-        "probability": round(float(last_prob), 4),
+        "p_buy": round(float(p_buy), 4),
+        "p_hold": round(float(p_hold), 4),
+        "p_sell": round(float(p_sell), 4),
+        "confidence": round(float(max_prob), 4),
         "signal": signal,
         "result": label,
     }
@@ -169,7 +181,7 @@ def main(symbol: str = "BTCUSD", interval: int = 60):
         signal_row = predict_signal(model, features)
         if signal_row:
             save_signal(signal_row)
-            print(f"🤖 Signal: {signal_row['result']} | Prob: {signal_row['probability']}")
+            print(f"🤖 Signal: {signal_row['result']} | Conf: {signal_row['confidence']} | p_buy={signal_row['p_buy']} | p_sell={signal_row['p_sell']}")
         else:
             print("⚠️ No signal generated.")
 
