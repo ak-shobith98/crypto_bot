@@ -1,90 +1,77 @@
 # File: src/decision/signals.py
-# Purpose: Generate numeric trading signals (BUY=2, HOLD=1, SELL=0)
-# with probability outputs for each class.
+# Purpose: Generate BUY / SELL / HOLD signals using trained XGBoost model.
 
-import joblib
 import pandas as pd
+import numpy as np
+import xgboost as xgb
+import joblib
 from pathlib import Path
 from src.config import DATA_PATH
 
 MODEL_PATH = DATA_PATH / "models" / "xgboost_latest.model"
+FEATURES_PATH = DATA_PATH / "processed" / "features.parquet"
 OUTPUT_PATH = DATA_PATH / "result" / "signals.parquet"
 
 
-# --------------------------------------------------
-# 🧠 Load trained model
-# --------------------------------------------------
+# -----------------------------------------------------
+# 🧠 Load Model
+# -----------------------------------------------------
 def load_model():
+    """Load XGBoost model — supports both native and joblib formats."""
     if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"❌ Model file not found: {MODEL_PATH}")
-    print(f"📦 Loading model from {MODEL_PATH}...")
-    return joblib.load(MODEL_PATH)
+        raise FileNotFoundError(f"❌ Model not found: {MODEL_PATH}")
+
+    try:
+        model = xgb.XGBClassifier()
+        model.load_model(str(MODEL_PATH))
+        print("✅ Loaded native XGBoost model.")
+        return model
+    except Exception:
+        try:
+            model = joblib.load(MODEL_PATH)
+            print("✅ Loaded legacy joblib model.")
+            return model
+        except Exception as e:
+            raise RuntimeError(f"❌ Failed to load model: {e}")
 
 
-# --------------------------------------------------
-# 🔮 Generate signals from features
-# --------------------------------------------------
-def generate_signals(features: pd.DataFrame) -> pd.DataFrame:
-    """
-    Predict trade signals using all 3 class probabilities:
-      0 → SELL
-      1 → HOLD
-      2 → BUY
-    """
+# -----------------------------------------------------
+# 🔮 Generate Signals
+# -----------------------------------------------------
+def generate_signals(df: pd.DataFrame):
     model = load_model()
 
-    if "symbol" not in features.columns:
-        raise ValueError("❌ Missing 'symbol' column in features dataset")
+    features = [
+        "open", "high", "low", "close", "volume", "return",
+        "sma_7", "ema_14", "volatility_14", "rsi_14",
+        "bb_upper", "bb_lower", "macd", "macd_signal",
+        "macd_hist", "obv", "vwap"
+    ]
+    X = df[features]
 
-    all_signals = []
+    # Predict probabilities
+    probs = model.predict_proba(X)
+    preds = np.argmax(probs, axis=1)
 
-    for symbol, group in features.groupby("symbol"):
-        drop_cols = ["timestamp", "symbol", "target"]
-        X = group.drop(columns=[c for c in drop_cols if c in group.columns], errors="ignore")
+    df["p_sell"] = probs[:, 0]
+    df["p_hold"] = probs[:, 1]
+    df["p_buy"] = probs[:, 2]
 
-        # Predict probabilities for all classes
-        probs = model.predict_proba(X)
-        preds = probs.argmax(axis=1)  # 0/1/2
+    df["signal"] = preds
+    df["result"] = df["signal"].map({0: "SELL", 1: "HOLD", 2: "BUY"})
 
-        for i in range(len(preds)):
-            p_sell, p_hold, p_buy = probs[i]
-
-            if preds[i] == 2:
-                label, signal = "BUY", 1
-            elif preds[i] == 0:
-                label, signal = "SELL", -1
-            else:
-                label, signal = "HOLD", 0
-
-            all_signals.append({
-                "timestamp": group.iloc[i]["timestamp"],
-                "symbol": symbol,
-                "p_sell": round(float(p_sell), 4),
-                "p_hold": round(float(p_hold), 4),
-                "p_buy": round(float(p_buy), 4),
-                "signal": signal,
-                "result": label,
-            })
-
-    signals_df = pd.DataFrame(all_signals)
+    # Save results
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    signals_df.to_parquet(OUTPUT_PATH, index=False)
-
-    print(f"✅ Saved {len(signals_df)} signals across {signals_df['symbol'].nunique()} symbols → {OUTPUT_PATH}")
+    df.to_parquet(OUTPUT_PATH, index=False)
+    print(f"✅ Saved {len(df)} signals across {df['symbol'].nunique()} symbols → {OUTPUT_PATH}")
 
     print("\n📊 Sample Signals Preview:")
-    print(signals_df.head())
-
-    return signals_df
+    print(df.head())
 
 
-# --------------------------------------------------
-# 🏁 Entry point
-# --------------------------------------------------
+# -----------------------------------------------------
+# 🏁 Entry Point
+# -----------------------------------------------------
 if __name__ == "__main__":
-    features_path = DATA_PATH / "processed" / "features.parquet"
-    if features_path.exists():
-        df = pd.read_parquet(features_path)
-        generate_signals(df)
-    else:
-        print("❌ Features file not found.")
+    df = pd.read_parquet(FEATURES_PATH)
+    generate_signals(df)
