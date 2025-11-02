@@ -35,3 +35,6 @@ def run_preprocessing() -> pd.DataFrame:
     print(f"✅ Features saved to: {output_file}")
 
     return df
+
+if __name__ == "__main__":
+    run_preprocessing()

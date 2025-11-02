@@ -1,5 +1,6 @@
 # File: src/decision/signals.py
-# Purpose: Generate numeric trading signals (1 = BUY, -1 = SELL, 0 = HOLD) with readable labels and save to file
+# Purpose: Generate numeric trading signals (BUY=2, HOLD=1, SELL=0)
+# with probability outputs for each class.
 
 import joblib
 import pandas as pd
@@ -7,27 +8,33 @@ from pathlib import Path
 from src.config import DATA_PATH
 
 MODEL_PATH = DATA_PATH / "models" / "xgboost_latest.model"
-OUTPUT_PATH = DATA_PATH / "result" / "signals.parquet"  # ✅ where signals are saved
+OUTPUT_PATH = DATA_PATH / "result" / "signals.parquet"
 
 
+# --------------------------------------------------
+# 🧠 Load trained model
+# --------------------------------------------------
 def load_model():
-    """Load the trained XGBoost model."""
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"❌ Model file not found: {MODEL_PATH}")
     print(f"📦 Loading model from {MODEL_PATH}...")
     return joblib.load(MODEL_PATH)
 
 
-def generate_signals(features: pd.DataFrame, prob_threshold: float = 0.55) -> pd.DataFrame:
+# --------------------------------------------------
+# 🔮 Generate signals from features
+# --------------------------------------------------
+def generate_signals(features: pd.DataFrame) -> pd.DataFrame:
     """
-    Generate numeric and textual trade signals:
-        signal → numeric (1 = BUY, -1 = SELL, 0 = HOLD)
-        result → text ("BUY", "SELL", "HOLD")
+    Predict trade signals using all 3 class probabilities:
+      0 → SELL
+      1 → HOLD
+      2 → BUY
     """
     model = load_model()
 
     if "symbol" not in features.columns:
-        raise ValueError("❌ 'symbol' column missing in features dataset")
+        raise ValueError("❌ Missing 'symbol' column in features dataset")
 
     all_signals = []
 
@@ -35,60 +42,45 @@ def generate_signals(features: pd.DataFrame, prob_threshold: float = 0.55) -> pd
         drop_cols = ["timestamp", "symbol", "target"]
         X = group.drop(columns=[c for c in drop_cols if c in group.columns], errors="ignore")
 
-        preds = model.predict(X)
+        # Predict probabilities for all classes
         probs = model.predict_proba(X)
-        n_classes = probs.shape[1]
+        preds = probs.argmax(axis=1)  # 0/1/2
 
-        # Multi-class case: [hold, buy, sell]
-        if n_classes == 3:
-            class_map = {0: "HOLD", 1: "BUY", 2: "SELL"}
-            for i, (pred, p) in enumerate(zip(preds, probs)):
-                result = class_map[int(pred)]
-                signal = 1 if result == "BUY" else -1 if result == "SELL" else 0
-                all_signals.append({
-                    "timestamp": group.iloc[i].get("timestamp", None),
-                    "symbol": symbol,
-                    "p_hold": float(p[0]),
-                    "p_buy": float(p[1]),
-                    "p_sell": float(p[2]),
-                    "signal": signal,
-                    "result": result
-                })
+        for i in range(len(preds)):
+            p_sell, p_hold, p_buy = probs[i]
 
-        # Binary case: [hold, trade]
-        elif n_classes == 2:
-            for i, (pred, prob) in enumerate(zip(preds, probs[:, 1])):
-                if prob > prob_threshold:
-                    signal, result = 1, "BUY"
-                elif prob < (1 - prob_threshold):
-                    signal, result = -1, "SELL"
-                else:
-                    signal, result = 0, "HOLD"
+            if preds[i] == 2:
+                label, signal = "BUY", 1
+            elif preds[i] == 0:
+                label, signal = "SELL", -1
+            else:
+                label, signal = "HOLD", 0
 
-                all_signals.append({
-                    "timestamp": group.iloc[i].get("timestamp", None),
-                    "symbol": symbol,
-                    "probability": round(float(prob), 4),
-                    "signal": signal,
-                    "result": result
-                })
-        else:
-            raise ValueError(f"Unexpected number of classes: {n_classes}")
+            all_signals.append({
+                "timestamp": group.iloc[i]["timestamp"],
+                "symbol": symbol,
+                "p_sell": round(float(p_sell), 4),
+                "p_hold": round(float(p_hold), 4),
+                "p_buy": round(float(p_buy), 4),
+                "signal": signal,
+                "result": label,
+            })
 
     signals_df = pd.DataFrame(all_signals)
-
-    # ✅ Save to file
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     signals_df.to_parquet(OUTPUT_PATH, index=False)
-    print(f"✅ Saved {len(signals_df)} signals across {signals_df['symbol'].nunique()} symbols to {OUTPUT_PATH}")
 
-    # 🧠 Show quick sanity sample
+    print(f"✅ Saved {len(signals_df)} signals across {signals_df['symbol'].nunique()} symbols → {OUTPUT_PATH}")
+
     print("\n📊 Sample Signals Preview:")
     print(signals_df.head())
 
     return signals_df
 
 
+# --------------------------------------------------
+# 🏁 Entry point
+# --------------------------------------------------
 if __name__ == "__main__":
     features_path = DATA_PATH / "processed" / "features.parquet"
     if features_path.exists():

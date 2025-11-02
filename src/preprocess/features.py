@@ -58,18 +58,21 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
         grp["bb_upper"] = rolling_mean + (2 * rolling_std)
         grp["bb_lower"] = rolling_mean - (2 * rolling_std)
 
-        # ---- MACD (Moving Average Convergence Divergence) ----
+        # ---- MACD ----
         ema_12 = grp["close"].ewm(span=12, adjust=False).mean()
         ema_26 = grp["close"].ewm(span=26, adjust=False).mean()
         grp["macd"] = ema_12 - ema_26
         grp["macd_signal"] = grp["macd"].ewm(span=9, adjust=False).mean()
         grp["macd_hist"] = grp["macd"] - grp["macd_signal"]
 
-        # ---- OBV (On-Balance Volume) ----
+        # ---- OBV ----
         grp["obv"] = obv(grp["close"], grp["volume"])
 
         # ---- VWAP ----
         grp["vwap"] = vwap(grp)
+
+        # ---- target_raw (important for model consistency) ----
+        grp["target_raw"] = grp["close"].pct_change().fillna(0)
 
         all_features.append(grp)
 
@@ -82,7 +85,7 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 # Optional: quick test
 if __name__ == "__main__":
     sample = pd.DataFrame({
-        "symbol": ["BTC-USD"] * 40,
+        "symbol": ["BTCUSD"] * 40,
         "timestamp": pd.date_range("2025-01-01", periods=40, freq="H"),
         "open": np.random.rand(40) * 100,
         "high": np.random.rand(40) * 100,

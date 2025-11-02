@@ -1,3 +1,37 @@
+Perfect ✅ — this means your trainer is now fixed and the label mapping is consistent.
+
+But ⚠️ let’s talk about that Accuracy: 1.0000 — that’s too perfect, which means the model is likely overfitting (memorizing the training data instead of learning patterns).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Perfect — now that we’ve reached the training + prediction + retraining phase, let’s put everything together into a complete end-to-end roadmap for your trading bot, including:
 ✅ Backtesting
 ✅ Paper Trading

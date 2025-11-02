@@ -63,21 +63,21 @@ def main():
     else:
         print("⚠️ Feature generation failed or returned empty DataFrame.")
 
-    # ===== (Future) STAGE 3: Modeling =====
-    from src.models.trainer import train_model
-    train_model()
+    # # ===== (Future) STAGE 3: Modeling =====
+    # from src.models.trainer import train_model
+    # train_model()
 
-    # ===== (Future) STAGE 4: Decision Layer =====
-    from src.decision.signals import generate_signals
+    # # ===== (Future) STAGE 4: Decision Layer =====
+    # from src.decision.signals import generate_signals
 
-    print("\n📈 Stage 4: Generating numeric trade signals...")
-    features_path = DATA_PATH / "processed" / "features.parquet"
-    features = pd.read_parquet(features_path)
+    # print("\n📈 Stage 4: Generating numeric trade signals...")
+    # features_path = DATA_PATH / "processed" / "features.parquet"
+    # features = pd.read_parquet(features_path)
 
-    signals_df = generate_signals(features)
-    signals_path = DATA_PATH / "processed" / "signals.csv"
-    signals_df.to_csv(signals_path, index=False)
-    print(f"💾 Saved signals to: {signals_path}")
+    # signals_df = generate_signals(features)
+    # signals_path = DATA_PATH / "processed" / "signals.csv"
+    # signals_df.to_csv(signals_path, index=False)
+    # print(f"💾 Saved signals to: {signals_path}")
 
 if __name__ == "__main__":
     main()
