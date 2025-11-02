@@ -1,152 +1,148 @@
+# =========================================================
 # File: Backtest.py
-# Purpose: Robust backtesting with safe price merge, clear diagnostics, and metrics
+# Purpose: Realistic trade simulation with TP/SL, fees, and per-symbol sequential testing
+# =========================================================
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from pathlib import Path
 from src.config import DATA_PATH
-import matplotlib.pyplot as plt
 
 # === CONFIG ===
-CONFIDENCE_THRESHOLD = 0.60
-TAKE_PROFIT = 0.02
-STOP_LOSS = -0.01
-HOLD_EXIT_AFTER = 3
+TP_PCT = 0.02              # +2% take profit
+SL_PCT = -0.01             # -1% stop loss
+FEE_PCT = 0.0005           # 0.05% per trade (entry+exit)
+SLIPPAGE_PCT = 0.0003      # 0.03% price slippage
+MIN_CONF = 0.55            # Minimum confidence to enter a trade
+MAX_HOLD_BARS = 3          # Exit after this many HOLDs if no exit yet
 
 # === Paths ===
 SIGNALS_PATH = DATA_PATH / "result" / "signals.parquet"
-FEATURES_PATH = DATA_PATH / "processed" / "features.parquet"
-
-print("📥 Loading signals and prices...")
-signals = pd.read_parquet(SIGNALS_PATH)
-features = pd.read_parquet(FEATURES_PATH)
-
-print(f"🔹 Signals columns: {list(signals.columns)}")
-print(f"🔹 Features columns: {list(features.columns)}")
+OUTPUT_PATH = DATA_PATH / "result" / "backtest_trades.parquet"
 
 # =====================================================
-# ✅ Safe merge with auto-repair
+# 🧮 Backtest per symbol
 # =====================================================
-if "close" in features.columns:
-    merged = signals.merge(
-        features[["timestamp", "symbol", "close"]],
-        on=["timestamp", "symbol"],
-        how="left",
-        suffixes=("", "_feat")
-    )
-    print("✅ Merged 'close' from features file.")
-else:
-    merged = signals.copy()
-    print("⚠️ No 'close' in features — using signals as-is.")
-
-# Handle possible suffixes or missing columns
-possible_close_cols = [c for c in merged.columns if "close" in c.lower()]
-if len(possible_close_cols) == 0:
-    raise ValueError("❌ No column with 'close' found even after merge.")
-
-# Prefer exact 'close' else use first match
-if "close" not in merged.columns:
-    merged.rename(columns={possible_close_cols[0]: "close"}, inplace=True)
-    print(f"⚙️ Using '{possible_close_cols[0]}' as 'close' column.")
-
-signals = merged.dropna(subset=["close"]).reset_index(drop=True)
-print(f"✅ Using {len(signals)} valid rows for backtesting.\n")
-
-# =====================================================
-# 🚀 Backtest Logic
-# =====================================================
-def backtest(signals: pd.DataFrame):
+def backtest_symbol(df: pd.DataFrame):
     trades = []
+    position = None
+    hold_count = 0
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+        price = row["close"]
+        signal = row["result"]
+        p_buy, p_sell = row["p_buy"], row["p_sell"]
+        conf = max(p_buy, p_sell)
+
+        # === ENTRY ===
+        if position is None:
+            if signal == "BUY" and p_buy >= MIN_CONF:
+                position = {"side": "BUY", "entry": price * (1 + SLIPPAGE_PCT), "entry_time": row["timestamp"]}
+                hold_count = 0
+            elif signal == "SELL" and p_sell >= MIN_CONF:
+                position = {"side": "SELL", "entry": price * (1 - SLIPPAGE_PCT), "entry_time": row["timestamp"]}
+                hold_count = 0
+            continue
+
+        # === EXIT ===
+        entry = position["entry"]
+        side = position["side"]
+        pnl = (price - entry) / entry if side == "BUY" else (entry - price) / entry
+
+        exit_reason = None
+        if pnl >= TP_PCT:
+            exit_reason = "TP"
+        elif pnl <= SL_PCT:
+            exit_reason = "SL"
+        elif signal in ["BUY", "SELL"] and signal != side:
+            exit_reason = "Flip"
+        elif signal == "HOLD":
+            hold_count += 1
+            if hold_count >= MAX_HOLD_BARS:
+                exit_reason = "Timeout"
+        else:
+            hold_count = 0
+
+        if exit_reason:
+            # Deduct fees and slippage
+            pnl_after_fees = pnl - 2 * FEE_PCT
+            pnl_pct = pnl_after_fees * 100
+            trades.append({
+                "symbol": row["symbol"],
+                "entry_time": position["entry_time"],
+                "exit_time": row["timestamp"],
+                "entry_price": entry,
+                "exit_price": price,
+                "side": side,
+                "pnl_pct": pnl_pct,
+                "exit_reason": exit_reason,
+            })
+            position = None
+            hold_count = 0
+
+    return trades
+
+
+# =====================================================
+# 🚀 Run Backtest
+# =====================================================
+def run_backtest():
+    print("📥 Loading signals and preparing data...")
+    signals = pd.read_parquet(SIGNALS_PATH)
+
+    if signals.empty:
+        raise ValueError("❌ No signal data found — run signals.py first.")
+
+    results = []
     for symbol, df in signals.groupby("symbol"):
         df = df.sort_values("timestamp").reset_index(drop=True)
-        position = None
-        hold_count = 0
+        results.extend(backtest_symbol(df))
 
-        for _, row in df.iterrows():
-            ts, price = row["timestamp"], row["close"]
-            sig = row["result"]
-            p_buy, p_sell = row.get("p_buy", 0), row.get("p_sell", 0)
+    results_df = pd.DataFrame(results)
+    if results_df.empty:
+        print("⚠️ No trades executed based on thresholds.")
+        return
 
-            # === ENTRY ===
-            if position is None:
-                if sig == "BUY" and p_buy > CONFIDENCE_THRESHOLD:
-                    position = {"dir": "BUY", "entry_price": price, "entry_time": ts}
-                elif sig == "SELL" and p_sell > CONFIDENCE_THRESHOLD:
-                    position = {"dir": "SELL", "entry_price": price, "entry_time": ts}
-                continue
-
-            # === ACTIVE POSITION ===
-            entry = position["entry_price"]
-            direction = position["dir"]
-            pnl = (price - entry) / entry if direction == "BUY" else (entry - price) / entry
-
-            exit_trade = False
-
-            # exit rules
-            if pnl >= TAKE_PROFIT or pnl <= STOP_LOSS:
-                exit_trade = True
-            elif sig == "HOLD":
-                hold_count += 1
-                if hold_count >= HOLD_EXIT_AFTER:
-                    exit_trade = True
-            elif (sig == "SELL" and direction == "BUY") or (sig == "BUY" and direction == "SELL"):
-                exit_trade = True
-            else:
-                hold_count = 0
-
-            if exit_trade:
-                trades.append({
-                    "symbol": symbol,
-                    "entry_time": position["entry_time"],
-                    "exit_time": ts,
-                    "entry_price": entry,
-                    "exit_price": price,
-                    "direction": direction,
-                    "pnl_pct": pnl * 100
-                })
-                position = None
-                hold_count = 0
-
-    return pd.DataFrame(trades)
-
-# =====================================================
-# 🧮 Run Backtest
-# =====================================================
-print("🚀 Running backtest...")
-results = backtest(signals)
-
-if results.empty:
-    print("⚠️ No trades executed based on thresholds.")
-else:
-    total = len(results)
-    wins = (results["pnl_pct"] > 0).sum()
-    losses = total - wins
+    # === Summary ===
+    total = len(results_df)
+    wins = (results_df["pnl_pct"] > 0).sum()
+    losses = (results_df["pnl_pct"] <= 0).sum()
     win_rate = wins / total * 100
-    avg_pnl = results["pnl_pct"].mean()
-    total_profit = results["pnl_pct"].sum()
+    avg_pnl = results_df["pnl_pct"].mean()
+    total_pnl = results_df["pnl_pct"].sum()
 
     print("\n📊 Backtest Summary")
     print("-" * 60)
     print(f"Total Trades   : {total}")
-    print(f"Wins           : {wins}")
-    print(f"Losses         : {losses}")
+    print(f"Winning Trades : {wins}")
+    print(f"Losing Trades  : {losses}")
     print(f"✅ Win Rate     : {win_rate:.2f}%")
     print(f"📊 Avg PnL      : {avg_pnl:.3f}%")
-    print(f"💰 Total Profit : {total_profit:.2f}%")
+    print(f"💰 Total Profit : {total_pnl:.2f}%")
 
-    out = DATA_PATH / "result" / "backtest_trades.parquet"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    results.to_parquet(out, index=False)
-    print(f"\n💾 Saved trade log → {out}")
+    # Save results
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    results_df.to_parquet(OUTPUT_PATH, index=False)
+    print(f"\n💾 Results saved → {OUTPUT_PATH}")
 
-    results = results.sort_values("exit_time")
-    results["cum_pnl"] = results["pnl_pct"].cumsum()
+    # === Equity curve ===
+    results_df = results_df.sort_values("exit_time")
+    results_df["cum_pnl"] = results_df["pnl_pct"].cumsum()
+
     plt.figure(figsize=(10, 5))
-    plt.plot(results["exit_time"], results["cum_pnl"], label="Cumulative PnL", linewidth=2)
-    plt.title("📈 Cumulative Profit Curve")
+    plt.plot(results_df["exit_time"], results_df["cum_pnl"])
+    plt.title("📈 Cumulative Profit Curve (after fees & slippage)")
     plt.xlabel("Time")
     plt.ylabel("Cumulative PnL (%)")
     plt.grid(True)
-    plt.legend()
     plt.tight_layout()
     plt.show()
+
+
+# =====================================================
+# 🏁 Entry Point
+# =====================================================
+if __name__ == "__main__":
+    run_backtest()
